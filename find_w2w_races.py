@@ -42,10 +42,12 @@ from pathlib import Path
 CROP_W, CROP_H = 1280, 250         # crop size after downscale — full top band
 SCALE_W, SCALE_H = 1280, 720       # downscale target before crop
 DEFAULT_GAP = 120                  # merge intra-session hit gaps within this many seconds
-DEFAULT_PAD_PRE = 5                # tiny pre-pad — first hit ≈ grid display start
+DEFAULT_PAD_PRE = 5                # tiny pre-pad — start is back-extended via GRIDLIFE banner
 DEFAULT_PAD_POST = 15              # tiny post-pad — last hit ≈ end of results recap
 DEFAULT_SESSION_GAP = 1800         # ranges further apart than this are different sessions (30min)
 DEFAULT_MIN_HITS = 3               # drop ranges with fewer hits — usually OCR slips on sponsor logos
+DEFAULT_COMMERCIAL_GAP = 30        # absence of GRIDLIFE banner this long → that's a commercial break
+DEFAULT_MAX_LOOKBACK = 600         # cap session-start back-extension at 10min
 TESSERACT_PSM = "6"
 OCR_WORKERS = 24                   # parallel tesseract processes
 
@@ -58,6 +60,14 @@ SERIES = {
     "gltc": re.compile(r"\bGL[TY]C\b", re.IGNORECASE),
     "glgt": re.compile(r"\bGLGT\b", re.IGNORECASE),
 }
+
+# The "GRIDLIFE" event banner is on screen during *all* live broadcast
+# coverage (cars on track, intros, lower thirds) but disappears during
+# commercial breaks. We use its presence to back-extend a session start
+# from the first series-leaderboard hit to the end of the previous
+# commercial break — covering pre-leaderboard out-laps for qualifying
+# and grid-walk content for races.
+GRIDLIFE_RE = re.compile(r"GR[1IL][DOQ]L[1IL]F[E]?", re.IGNORECASE)
 
 # "RACE 1" / "RACE  3" — pipe sometimes OCRs as the digit or a separator.
 RACE_NUM_RE = re.compile(r"RACE\s*[|l\s]*\s*(\d+)", re.IGNORECASE)
@@ -229,6 +239,35 @@ def merge_ranges(hits: list, gap: int, pad_pre: int, pad_post: int,
     return merged
 
 
+def back_extend_to_commercial_end(ranges: list, gridlife_times: list,
+                                   commercial_gap: int = DEFAULT_COMMERCIAL_GAP,
+                                   max_lookback: int = DEFAULT_MAX_LOOKBACK) -> list:
+    """For each merged range, walk the start backward through GRIDLIFE-banner
+    appearances. Stop when we hit a gap longer than commercial_gap (= a
+    commercial break) or after max_lookback seconds. The new start is the
+    earliest banner appearance in that connected-back-to-our-session chain."""
+    if not gridlife_times or not ranges:
+        return ranges
+    gtimes = sorted(gridlife_times)
+    for r in ranges:
+        original_start = r.start
+        floor_t = max(0.0, original_start - max_lookback)
+        # GRIDLIFE banner appearances from the lookback window up to range start
+        candidates = [t for t in gtimes if floor_t <= t < original_start]
+        if not candidates:
+            continue
+        # Walk backward: keep extending start as long as adjacent GRIDLIFE
+        # appearances are within commercial_gap of each other.
+        new_start = original_start
+        for t in reversed(candidates):
+            if new_start - t <= commercial_gap:
+                new_start = t
+            else:
+                break
+        r.start = new_start
+    return ranges
+
+
 def group_into_sessions(ranges: list, session_gap: int) -> list:
     """Cluster merged ranges into sessions (gaps > session_gap mark a new session)."""
     if not ranges:
@@ -257,7 +296,9 @@ def scan(video: Path, series_list: list, gap: int, pad_pre: int, pad_post: int):
           f"gap={gap}s pad=-{pad_pre}/+{pad_post}s", file=sys.stderr)
 
     states = {s: {"video": str(video), "series": s, "duration": duration,
-                  "hits": [], "completed": False} for s in series_list}
+                  "hits": [], "gridlife_times": [], "completed": False}
+              for s in series_list}
+    gridlife_times = []  # shared, copied to each state at end
 
     tmp_root = Path("/private/tmp/claude")
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -286,6 +327,10 @@ def scan(video: Path, series_list: list, gap: int, pad_pre: int, pad_post: int):
         tasks = [(i + 1, kf_times[i], frames[i]) for i in range(n)]
         with ThreadPoolExecutor(max_workers=OCR_WORKERS) as ex:
             for done, (idx, t, text) in enumerate(ex.map(_ocr_one, tasks), 1):
+                # Track when the GRIDLIFE event banner is on screen — used to
+                # back-extend session starts to the end of the prior commercial.
+                if GRIDLIFE_RE.search(text):
+                    gridlife_times.append(t)
                 # Check each requested series against the same OCR text.
                 for s in series_list:
                     if SERIES[s].search(text):
@@ -298,17 +343,20 @@ def scan(video: Path, series_list: list, gap: int, pad_pre: int, pad_post: int):
                 if done % 200 == 0:
                     counts = " ".join(f"{s}={len(states[s]['hits'])}"
                                       for s in series_list)
-                    print(f"  ... {done}/{n} (t≈{fmt_ts(t)}, {counts})",
-                          file=sys.stderr)
+                    print(f"  ... {done}/{n} (t≈{fmt_ts(t)}, {counts}, "
+                          f"gridlife={len(gridlife_times)})", file=sys.stderr)
                     for s in series_list:
+                        states[s]["gridlife_times"] = gridlife_times
                         sidecar_for(video, s).write_text(
                             json.dumps(states[s], indent=2))
 
         for s in series_list:
             st = states[s]
             st["completed"] = True
+            st["gridlife_times"] = gridlife_times
             hits = [Hit(**h) for h in st["hits"]]
             ranges = merge_ranges(hits, gap, pad_pre, pad_post, duration)
+            ranges = back_extend_to_commercial_end(ranges, gridlife_times)
             st["ranges"] = [asdict(r) for r in ranges]
             sidecar_for(video, s).write_text(json.dumps(st, indent=2))
             print(f"\n[scan] {s}: {len(st['hits'])} hits → {len(ranges)} ranges",
