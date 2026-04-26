@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.venv/
+venv/
+
+# Don't accidentally check in raw broadcast videos or scan sidecars
+*.webm
+*.mkv
+*.mp4
+*.rush.json
+rush_clips/
