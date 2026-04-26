@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
-Detect Rush SR race segments in long webm captures.
+Detect GridLife race-class segments in long broadcast webm captures.
 
 Heuristic: GridLife broadcast graphics show a teal sidebar in the upper-left
-labelled "RUSH QUALIFYING" or "RUSH RACE" while a Rush session is on screen.
-We sample frames at a fixed interval, crop the upper-left header, OCR it,
-and merge contiguous "RUSH" hits into time ranges (with a configurable gap
-tolerance and padding).
+labelled "<SERIES> WARMUP" / "<SERIES> QUALIFYING" / "<SERIES> | RACE N"
+while a session of that class is on screen. Supported series: rush (default),
+gltc, glgt. We OCR every keyframe, match the per-series detector regex,
+and merge contiguous hits into time ranges.
 
 Usage:
-    ./find_rush_races.py scan day1.webm
-    ./find_rush_races.py scan day1.webm --interval 10 --gap 120 --pad 60
-    ./find_rush_races.py snip day1.webm   # uses ranges from prior scan
-    ./find_rush_races.py scan day1.webm --resume   # continue interrupted scan
+    ./find_w2w_races.py scan day1.webm                     # rush only (default)
+    ./find_w2w_races.py scan day1.webm --series gltc
+    ./find_w2w_races.py scan day1.webm --series rush,gltc,glgt   # one OCR pass, three sidecars
+    ./find_w2w_races.py scan day1.webm --series all              # same
+    ./find_w2w_races.py snip day1.webm                     # rush
+    ./find_w2w_races.py snip day1.webm --series gltc
 
-Outputs JSON sidecar at <video>.rush.json with detections + merged ranges.
+Each scan writes a sidecar at <video>.<series>.json containing per-hit
+OCR text plus merged time ranges. Snipping reads that sidecar.
 """
 
 import argparse
@@ -40,10 +43,37 @@ DEFAULT_SESSION_GAP = 1800         # ranges further apart than this are differen
 TESSERACT_PSM = "6"
 OCR_WORKERS = 24                   # parallel tesseract processes
 
-# Match RUSH with common OCR slips (V/U, I/H, 0/O). Anchored to whole word.
-RUSH_RE = re.compile(r"\bR[UV][SS5][HMNI]?\b", re.IGNORECASE)
+# Series detectors. Each maps a CLI name → compiled regex matching the
+# leading series word in the broadcast overlay. All series share the same
+# overlay format ("<SERIES> | RACE 1", "<SERIES> WARMUP", etc.) so the same
+# classify() works across them — only the first word changes.
+SERIES = {
+    "rush": re.compile(r"\bR[UV][SS5][HMNI]?\b", re.IGNORECASE),
+    "gltc": re.compile(r"\bGL[TY]C\b", re.IGNORECASE),
+    "glgt": re.compile(r"\bGLGT\b", re.IGNORECASE),
+}
+
 # "RACE 1" / "RACE  3" — pipe sometimes OCRs as the digit or a separator.
 RACE_NUM_RE = re.compile(r"RACE\s*[|l\s]*\s*(\d+)", re.IGNORECASE)
+
+
+def parse_series(arg: str) -> list:
+    """Parse --series flag value (comma-list or 'all') into ordered list of names."""
+    if arg.lower() == "all":
+        return list(SERIES)
+    out = []
+    for name in arg.split(","):
+        name = name.strip().lower()
+        if name not in SERIES:
+            raise SystemExit(f"unknown series '{name}'; choices: "
+                             f"{', '.join(SERIES)} (or 'all')")
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def sidecar_for(video: Path, series: str) -> Path:
+    return video.with_suffix(video.suffix + f".{series}.json")
 
 
 @dataclass
@@ -207,16 +237,16 @@ def _ocr_one(args):
     return idx, t, text
 
 
-def scan(video: Path, gap: int, pad_pre: int, pad_post: int):
+def scan(video: Path, series_list: list, gap: int, pad_pre: int, pad_post: int):
     from concurrent.futures import ThreadPoolExecutor
 
-    sidecar = video.with_suffix(video.suffix + ".rush.json")
     duration = video_duration(video)
     print(f"[scan] {video.name}: duration={fmt_ts(duration)} "
+          f"series={','.join(series_list)} "
           f"gap={gap}s pad=-{pad_pre}/+{pad_post}s", file=sys.stderr)
 
-    state = {"video": str(video), "duration": duration,
-             "hits": [], "completed": False}
+    states = {s: {"video": str(video), "series": s, "duration": duration,
+                  "hits": [], "completed": False} for s in series_list}
 
     tmp_root = Path("/private/tmp/claude")
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -245,28 +275,36 @@ def scan(video: Path, gap: int, pad_pre: int, pad_post: int):
         tasks = [(i + 1, kf_times[i], frames[i]) for i in range(n)]
         with ThreadPoolExecutor(max_workers=OCR_WORKERS) as ex:
             for done, (idx, t, text) in enumerate(ex.map(_ocr_one, tasks), 1):
-                if RUSH_RE.search(text):
-                    label = classify(text)
-                    state["hits"].append({"t": t, "text": text.strip(), "label": label})
-                    print(f"  HIT  t={fmt_ts(t)}  label={label}", file=sys.stderr)
-                elif os.environ.get("RUSH_DEBUG"):
-                    print(f"  miss t={fmt_ts(t)} | {text.strip()[:60]!r}",
-                          file=sys.stderr)
+                # Check each requested series against the same OCR text.
+                for s in series_list:
+                    if SERIES[s].search(text):
+                        label = classify(text)
+                        states[s]["hits"].append({
+                            "t": t, "text": text.strip(), "label": label
+                        })
+                        print(f"  HIT  [{s.upper()}] t={fmt_ts(t)}  label={label}",
+                              file=sys.stderr)
                 if done % 200 == 0:
-                    print(f"  ... {done}/{n} (t≈{fmt_ts(t)}, "
-                          f"hits={len(state['hits'])})", file=sys.stderr)
-                    sidecar.write_text(json.dumps(state, indent=2))
+                    counts = " ".join(f"{s}={len(states[s]['hits'])}"
+                                      for s in series_list)
+                    print(f"  ... {done}/{n} (t≈{fmt_ts(t)}, {counts})",
+                          file=sys.stderr)
+                    for s in series_list:
+                        sidecar_for(video, s).write_text(
+                            json.dumps(states[s], indent=2))
 
-        state["completed"] = True
-        hits = [Hit(**h) for h in state["hits"]]
-        ranges = merge_ranges(hits, gap, pad_pre, pad_post, duration)
-        state["ranges"] = [asdict(r) for r in ranges]
-        sidecar.write_text(json.dumps(state, indent=2))
-        print(f"\n[scan] done. {len(state['hits'])} hits → {len(ranges)} ranges",
-              file=sys.stderr)
-        for r in ranges:
-            print(f"  RANGE {fmt_ts(r.start)} → {fmt_ts(r.end)}  "
-                  f"({r.hits} hits, {','.join(r.labels)})", file=sys.stderr)
+        for s in series_list:
+            st = states[s]
+            st["completed"] = True
+            hits = [Hit(**h) for h in st["hits"]]
+            ranges = merge_ranges(hits, gap, pad_pre, pad_post, duration)
+            st["ranges"] = [asdict(r) for r in ranges]
+            sidecar_for(video, s).write_text(json.dumps(st, indent=2))
+            print(f"\n[scan] {s}: {len(st['hits'])} hits → {len(ranges)} ranges",
+                  file=sys.stderr)
+            for r in ranges:
+                print(f"  [{s.upper()}] RANGE {fmt_ts(r.start)} → {fmt_ts(r.end)}  "
+                      f"({r.hits} hits, {','.join(r.labels)})", file=sys.stderr)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -287,19 +325,21 @@ def _snip_one(video: Path, r: dict, out_path: Path, reencode: bool):
     subprocess.check_call(cmd)
 
 
-def snip(video: Path, out_dir: Path, reencode: bool, join: bool,
+def snip(video: Path, series: str, out_dir: Path, reencode: bool, join: bool,
          session_gap: int):
-    sidecar = video.with_suffix(video.suffix + ".rush.json")
+    sidecar = sidecar_for(video, series)
     if not sidecar.exists():
         sys.exit(f"no scan results at {sidecar}; run scan first")
     state = json.loads(sidecar.read_text())
     ranges = state.get("ranges", [])
     if not ranges:
-        sys.exit("no ranges in scan result")
+        print(f"[snip] {series}: no ranges found, nothing to snip",
+              file=sys.stderr)
+        return
     out_dir.mkdir(parents=True, exist_ok=True)
     base = video.stem
     sessions = group_into_sessions(ranges, session_gap)
-    print(f"[snip] {len(ranges)} ranges → {len(sessions)} session(s) "
+    print(f"[snip] {series}: {len(ranges)} ranges → {len(sessions)} session(s) "
           f"(session-gap={session_gap}s)", file=sys.stderr)
 
     hits = state.get("hits", [])
@@ -317,23 +357,22 @@ def snip(video: Path, out_dir: Path, reencode: bool, join: bool,
         s_start = session[0]["start"]
         clip_paths = []
         for r_idx, r in enumerate(session, 1):
-            name = (f"{base}_session{s_idx:02d}_part{r_idx:02d}"
+            name = (f"{base}_{series}_session{s_idx:02d}_part{r_idx:02d}"
                     f"_{labels_tag}_{int(r['start'])}s.mkv")
             out_path = out_dir / name
             _snip_one(video, r, out_path, reencode)
             clip_paths.append(out_path)
 
         if join:
-            joined_name = (f"{base}_session{s_idx:02d}_{labels_tag}"
+            joined_name = (f"{base}_{series}_session{s_idx:02d}_{labels_tag}"
                            f"_{int(s_start)}s.mkv")
             joined_path = out_dir / joined_name
             if len(clip_paths) == 1:
-                # Single range — just rename the part file
                 clip_paths[0].rename(joined_path)
                 print(f"[join] single-range session → {joined_path.name}",
                       file=sys.stderr)
             else:
-                list_path = out_dir / f".{base}_session{s_idx:02d}_concat.txt"
+                list_path = out_dir / f".{base}_{series}_session{s_idx:02d}_concat.txt"
                 list_path.write_text(
                     "".join(f"file '{p.resolve()}'\n" for p in clip_paths)
                 )
@@ -345,7 +384,6 @@ def snip(video: Path, out_dir: Path, reencode: bool, join: bool,
                     "-c", "copy", "-y", str(joined_path),
                 ])
                 list_path.unlink(missing_ok=True)
-                # Tidy: drop the per-part files now that the combined exists
                 for p in clip_paths:
                     p.unlink(missing_ok=True)
 
@@ -356,6 +394,8 @@ def main():
 
     sp = sub.add_parser("scan")
     sp.add_argument("video", type=Path)
+    sp.add_argument("--series", default="rush",
+                    help="comma-list of rush/gltc/glgt, or 'all' (default: rush)")
     sp.add_argument("--gap", type=int, default=DEFAULT_GAP)
     sp.add_argument("--pad-pre", type=int, default=DEFAULT_PAD_PRE,
                     help="seconds prepended to each merged range")
@@ -364,7 +404,10 @@ def main():
 
     sn = sub.add_parser("snip")
     sn.add_argument("video", type=Path)
-    sn.add_argument("--out", type=Path, default=Path("rush_clips"))
+    sn.add_argument("--series", default="rush",
+                    help="comma-list of rush/gltc/glgt, or 'all' (default: rush)")
+    sn.add_argument("--out", type=Path, default=None,
+                    help="output directory (default: <series>_clips, or 'clips' for multi)")
     sn.add_argument("--reencode", action="store_true",
                     help="re-encode for frame-accurate cuts (slow); default is stream-copy")
     sn.add_argument("--no-join", dest="join", action="store_false",
@@ -375,9 +418,15 @@ def main():
 
     args = ap.parse_args()
     if args.cmd == "scan":
-        scan(args.video, args.gap, args.pad_pre, args.pad_post)
+        series_list = parse_series(args.series)
+        scan(args.video, series_list, args.gap, args.pad_pre, args.pad_post)
     elif args.cmd == "snip":
-        snip(args.video, args.out, args.reencode, args.join, args.session_gap)
+        series_list = parse_series(args.series)
+        for s in series_list:
+            out = args.out or Path(
+                f"{s}_clips" if len(series_list) == 1 else "clips"
+            )
+            snip(args.video, s, out, args.reencode, args.join, args.session_gap)
 
 
 if __name__ == "__main__":

@@ -16,14 +16,14 @@ videos as `dayN.webm`. The reusable tooling lives in `scripts/`.
 
 2. **Scan each video.**
    ```bash
-   for v in day*.webm; do ../scripts/find_rush_races.py scan "$v"; done
+   for v in day*.webm; do ../scripts/find_w2w_races.py scan "$v"; done
    ```
    Each video gets a `<video>.rush.json` sidecar with all detections.
    Expect ~30s per hour of 4K AV1 input on Apple Silicon.
 
 3. **Snip per-session clips.**
    ```bash
-   for v in day*.webm; do ../scripts/find_rush_races.py snip "$v"; done
+   for v in day*.webm; do ../scripts/find_w2w_races.py snip "$v"; done
    ```
    Output lands in `rush_clips/`, one MKV per session
    (warmup, qualifying, race 1..N), stream-copied — no re-encode.
@@ -66,7 +66,7 @@ The script needs only stdlib + ffmpeg + tesseract on PATH. Use
 `/private/tmp/claude/venv/bin/python` if it exists; any Python 3.10+
 works. Don't `pip install` globally — the script has no third-party deps.
 
-## Tunables in `find_rush_races.py`
+## Tunables in `find_w2w_races.py`
 
 ```python
 CROP_W, CROP_H = 300, 120          # crop size after downscale

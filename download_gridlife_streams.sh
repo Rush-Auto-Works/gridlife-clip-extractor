@@ -69,4 +69,4 @@ echo
 echo "Downloaded files:"
 ls -lh day*.webm 2>/dev/null || true
 echo
-echo "Next: ../scripts/find_rush_races.py scan day1.webm   (then snip)"
+echo "Next: ../scripts/find_w2w_races.py scan day1.webm   (then snip)"

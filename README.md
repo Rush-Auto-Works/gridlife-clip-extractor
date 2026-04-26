@@ -1,20 +1,25 @@
-# GridLife Rush SR — broadcast clip extractor
+# GridLife clip extractor
 
-Tools for pulling Rush SR sessions out of multi-hour GridLife broadcast streams.
+Pulls per-class race sessions out of multi-hour GridLife broadcast streams.
+Built for **Rush SR** (default) but also handles **GLTC** and **GLGT** —
+they share the same broadcast overlay format, only the leading series word
+differs.
 
 ## What this does
 
 GridLife event broadcasts are usually 8-12 hours of mixed-class race coverage.
-The Rush SR sessions appear on screen with a distinctive teal sidebar in the
-upper-left labelled `RUSH WARMUP`, `RUSH QUALIFYING`, or `RUSH | RACE N`.
+A given series' sessions appear on screen with a distinctive teal sidebar
+in the upper-left, labelled e.g. `RUSH WARMUP`, `RUSH | RACE 2`,
+`GLTC | RACE 1`, `GLGT | RACE 2`.
 
 This toolset:
 
 1. Downloads the day-by-day broadcast videos from the GridLife YouTube channel.
 2. Scans each video, OCRing a small upper-left crop to detect when the
-   Rush sidebar is on screen.
+   target series' sidebar is on screen. One OCR pass detects all requested
+   series at once.
 3. Merges adjacent detections, trims commercials, and snips one clip per
-   session (warmup, qualifying, race 1, race 2, etc.) using stream-copy.
+   session (warmup / qualifying / race 1 / race 2 / etc.) using stream-copy.
 
 ## One-time setup
 
@@ -41,25 +46,35 @@ cd    "2026-05 GridLife Mid-Ohio"
 ../scripts/download_gridlife_streams.sh --list                # browse recent
 ../scripts/download_gridlife_streams.sh URL1 URL2 URL3        # download N days
 
-# 3. Scan each day for Rush sessions (one .json sidecar per video)
-for v in day*.webm; do ../scripts/find_rush_races.py scan "$v"; done
+# 3. Scan each day. Default is Rush only; pass --series for others.
+for v in day*.webm; do ../scripts/find_w2w_races.py scan "$v"; done
+# Or scan all three classes in one OCR pass:
+for v in day*.webm; do ../scripts/find_w2w_races.py scan "$v" --series all; done
 
 # 4. Snip per-session clips (joined per session by default)
-for v in day*.webm; do ../scripts/find_rush_races.py snip "$v"; done
+for v in day*.webm; do ../scripts/find_w2w_races.py snip "$v"; done
+# For multiple series, snip writes to clips/ instead of <series>_clips/
+for v in day*.webm; do ../scripts/find_w2w_races.py snip "$v" --series all; done
 
-# Output: rush_clips/dayN_sessionXX_<LABEL>_<startSec>s.mkv
+# Output: rush_clips/dayN_rush_sessionXX_<LABEL>_<startSec>s.mkv
+#         clips/dayN_<series>_sessionXX_<LABEL>_<startSec>s.mkv (multi-series)
 ```
 
-Typical output for a three-day event:
+Typical output for a three-day event with `--series all`:
 
 ```
-day1_session01_QUALIFYING_2625s.mkv
-day2_session01_WARMUP_4639s.mkv
-day2_session02_RACE_1_19283s.mkv
-day2_session03_RACE_2_31206s.mkv
-day3_session01_WARMUP_5150s.mkv
-day3_session02_RACE_3_16844s.mkv
-day3_session03_RACE_4_25808s.mkv
+day1_rush_session01_QUALIFYING_2625s.mkv
+day2_rush_session01_WARMUP_4639s.mkv
+day2_rush_session02_RACE_1_19283s.mkv
+day2_rush_session03_RACE_2_31206s.mkv
+day2_gltc_session01_PRACTICE_5437s.mkv
+day2_gltc_session02_RACE_1_20844s.mkv
+day2_gltc_session03_RACE_2_32713s.mkv
+day2_glgt_session01_PRACTICE_5509s.mkv
+day2_glgt_session02_RACE_1_14091s.mkv
+day2_glgt_session03_RACE_2_34388s.mkv
+day3_rush_session01_WARMUP_5150s.mkv
+...
 ```
 
 ## Scripts
@@ -75,32 +90,35 @@ download_gridlife_streams.sh --auto 3          # auto-download 3 most recent str
 Pulls the highest-quality WebM (AV1 + Opus) into the current directory.
 Skips files that already exist.
 
-### `find_rush_races.py scan <video>`
+### `find_w2w_races.py scan <video>`
 
-Detects RUSH sessions by OCRing the upper-left header on every keyframe.
-Writes a JSON sidecar `<video>.rush.json` containing per-hit OCR text plus
-merged time ranges. Fast: ~30s per hour of 4K AV1 input on M-series.
-
-Tunables:
-
-| Flag          | Default | Notes                                                   |
-|---------------|---------|---------------------------------------------------------|
-| `--gap`       | 120     | Merge hits within this many seconds into one range      |
-| `--pad-pre`   | 60      | Seconds prepended to each merged range                  |
-| `--pad-post`  | 180     | Seconds appended (covers cooldown lap + results screen) |
-
-### `find_rush_races.py snip <video>`
-
-Reads the sidecar from `scan` and writes one stream-copied MKV per session.
+OCRs the upper-left header on every keyframe and matches against the
+detector regex(es) for the requested series. Writes a sidecar per series:
+`<video>.<series>.json`. Fast: ~30s per hour of 4K AV1 input on M-series
+for one series; multi-series is the same speed (single OCR pass).
 
 Tunables:
 
-| Flag             | Default       | Notes                                          |
-|------------------|---------------|------------------------------------------------|
-| `--out`          | `rush_clips`  | Output directory                               |
-| `--session-gap`  | 1800 (30min)  | Ranges further apart go in separate sessions   |
-| `--no-join`      | (off)         | Emit per-range files instead of joined session |
-| `--reencode`     | (off)         | Re-encode for frame-accurate cuts (slow)       |
+| Flag          | Default | Notes                                                       |
+|---------------|---------|-------------------------------------------------------------|
+| `--series`    | `rush`  | Comma-list of `rush,gltc,glgt`, or `all`                    |
+| `--gap`       | 120     | Merge hits within this many seconds into one range          |
+| `--pad-pre`   | 60      | Seconds prepended to each merged range                      |
+| `--pad-post`  | 180     | Seconds appended (covers cooldown lap + results screen)     |
+
+### `find_w2w_races.py snip <video>`
+
+Reads the per-series sidecar(s) and writes one stream-copied MKV per session.
+
+Tunables:
+
+| Flag             | Default               | Notes                                                |
+|------------------|-----------------------|------------------------------------------------------|
+| `--series`       | `rush`                | Same syntax as `scan`                                |
+| `--out`          | `<series>_clips` or `clips` | Output directory; `clips/` when multi-series   |
+| `--session-gap`  | 1800 (30min)          | Ranges further apart go in separate sessions         |
+| `--no-join`      | (off)                 | Emit per-range files instead of joined session       |
+| `--reencode`     | (off)                 | Re-encode for frame-accurate cuts (slow)             |
 
 ## How the heuristic works
 
@@ -142,7 +160,7 @@ To re-classify hits without re-scanning (e.g. after updating the
 
 ```python
 import json
-from find_rush_races import classify
+from find_w2w_races import classify
 from collections import Counter
 d = json.loads(open('day1.webm.rush.json').read())
 for h in d['hits']:
