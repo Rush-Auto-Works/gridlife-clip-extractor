@@ -34,12 +34,18 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 
 # --- Tunables ---
-CROP_W, CROP_H = 300, 120          # crop size after downscale (px)
+# Crop covers the full upper banner so we catch every overlay variant the
+# broadcast uses for one session: the in-race header (<SERIES> | RACE N),
+# the late-race GAP TO LEADER / CHECKERED FLAG view, the RESULTS recap
+# (which has a smaller <SERIES> | RACE N subheader top-left), the
+# top-right RUSH SERIES sponsor badge, and the WINNER panel.
+CROP_W, CROP_H = 1280, 250         # crop size after downscale — full top band
 SCALE_W, SCALE_H = 1280, 720       # downscale target before crop
 DEFAULT_GAP = 120                  # merge intra-session hit gaps within this many seconds
-DEFAULT_PAD_PRE = 60               # seconds prepended to each merged range
-DEFAULT_PAD_POST = 180             # seconds appended (covers cooldown lap + results + highlights)
+DEFAULT_PAD_PRE = 5                # tiny pre-pad — first hit ≈ grid display start
+DEFAULT_PAD_POST = 15              # tiny post-pad — last hit ≈ end of results recap
 DEFAULT_SESSION_GAP = 1800         # ranges further apart than this are different sessions (30min)
+DEFAULT_MIN_HITS = 3               # drop ranges with fewer hits — usually OCR slips on sponsor logos
 TESSERACT_PSM = "6"
 OCR_WORKERS = 24                   # parallel tesseract processes
 
@@ -181,7 +187,7 @@ def ocr_frame(path: Path) -> str:
 
 
 def merge_ranges(hits: list, gap: int, pad_pre: int, pad_post: int,
-                 max_t: float) -> list:
+                 max_t: float, min_hits: int = DEFAULT_MIN_HITS) -> list:
     if not hits:
         return []
     hits = sorted(hits, key=lambda h: h.t)
@@ -196,6 +202,11 @@ def merge_ranges(hits: list, gap: int, pad_pre: int, pad_post: int,
             ranges.append(cur)
             cur = Range(start=h.t, end=h.t, hits=1, labels=[h.label])
     ranges.append(cur)
+    # Drop tiny ranges — usually false positives from sponsor logos containing
+    # the series word elsewhere in the broadcast.
+    ranges = [r for r in ranges if r.hits >= min_hits]
+    if not ranges:
+        return []
     for r in ranges:
         r.start = max(0.0, r.start - pad_pre)
         r.end = min(max_t, r.end + pad_post)
