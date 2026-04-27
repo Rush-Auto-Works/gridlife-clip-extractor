@@ -10,16 +10,21 @@ differs.
 GridLife event broadcasts are usually 8-12 hours of mixed-class race coverage.
 A given series' sessions appear on screen with a distinctive teal sidebar
 in the upper-left, labelled e.g. `RUSH WARMUP`, `RUSH | RACE 2`,
-`GLTC | RACE 1`, `GLGT | RACE 2`.
+`GLTC | RACE 1`, `GLGT | RACE 2`. The broadcast cycles through several
+overlay variants per session (in-race header, "GAP TO LEADER" view,
+"CHECKERED FLAG", RESULTS recap, WINNER panel) and the GridLife event
+banner is on screen for all live coverage.
 
 This toolset:
 
 1. Downloads the day-by-day broadcast videos from the GridLife YouTube channel.
-2. Scans each video, OCRing a small upper-left crop to detect when the
-   target series' sidebar is on screen. One OCR pass detects all requested
-   series at once.
-3. Merges adjacent detections, trims commercials, and snips one clip per
-   session (warmup / qualifying / race 1 / race 2 / etc.) using stream-copy.
+2. Scans each video, OCRing the full upper banner of every keyframe to
+   catch every overlay variant for the requested series. One OCR pass
+   detects all requested series at once.
+3. Back-extends each session start to the end of the prior commercial
+   (using GRIDLIFE banner appearances as a "live coverage" signal),
+   merges adjacent detections, and snips one clip per session
+   (warmup / qualifying / race 1 / race 2 / etc.) via stream-copy.
 
 ## One-time setup
 
