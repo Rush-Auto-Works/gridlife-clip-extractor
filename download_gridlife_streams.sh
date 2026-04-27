@@ -50,17 +50,33 @@ for url in "$@"; do
     if [[ -f "$out" ]]; then
         echo "[skip] $out already exists" >&2
     else
+        # Retry the whole download up to 5 times. yt-dlp resumes from .part
+        # on each restart, so a transient network drop / SIGURG that kills the
+        # process doesn't lose the bytes we already have.
+        attempt=1
+        max_attempts=5
+        until yt-dlp \
+                -f 'bv*[ext=webm]+ba[ext=webm]/bv*+ba/b' \
+                --merge-output-format webm \
+                --concurrent-fragments 8 \
+                --retries 30 \
+                --fragment-retries 30 \
+                --retry-sleep linear=1::10 \
+                --socket-timeout 30 \
+                --no-progress --newline \
+                -o "$out" \
+                "$url"; do
+            rc=$?
+            if (( attempt >= max_attempts )); then
+                echo "[fail] $out: gave up after $max_attempts attempts (last rc=$rc)" >&2
+                exit 1
+            fi
+            echo "[retry] $out: attempt $attempt failed (rc=$rc), retrying in 5s ..." >&2
+            sleep 5
+            attempt=$((attempt + 1))
+            echo "[get ] $out  ←  $url  (attempt $attempt)"
+        done
         echo "[get ] $out  ←  $url"
-        # -f bv*+ba/b: best video+audio merged, prefer webm/AV1 if available
-        # --merge-output-format webm: keep AV1+Opus container
-        # --concurrent-fragments 8: faster on fast networks
-        yt-dlp \
-            -f 'bv*[ext=webm]+ba[ext=webm]/bv*+ba/b' \
-            --merge-output-format webm \
-            --concurrent-fragments 8 \
-            --no-progress --newline \
-            -o "$out" \
-            "$url"
     fi
     i=$((i + 1))
 done
