@@ -14,8 +14,11 @@
 # Run this from inside the event's folder, e.g.
 #   cd "2026-04 GridLife CMP" && ../scripts/download_gridlife_streams.sh URL1 URL2 URL3
 #
-# Defaults to 1080p (plenty for OCR; 4K is 4-10x larger). For 4K override:
-#   FORMAT='bv*[ext=webm]+ba[ext=webm]/bv*+ba/b' download_gridlife_streams.sh URL...
+# Defaults to the best available format (typically 4K AV1/VP9 + Opus). After
+# each download we verify the file integrity with ffprobe — if the duration
+# doesn't match what YouTube reported (e.g. resume corruption), the file is
+# deleted and re-downloaded fresh. Override with FORMAT env var if you want
+# to cap quality (e.g. FORMAT='bv*[height<=1080]+ba/b[height<=1080]').
 #
 set -euo pipefail
 
@@ -72,6 +75,34 @@ manual_merge() {
     return 1
 }
 
+# Probe a finished file end-to-end. Returns 0 if usable, 1 if corrupt.
+# Catches the byte-level resume corruption that ffprobe's metadata read
+# misses: we look for the EBML / DTS errors ffmpeg surfaces on stderr.
+verify_integrity() {
+    local f="$1" expected_sec="$2"
+    local actual
+    actual=$(ffprobe -v error -show_entries format=duration \
+                -of default=noprint_wrappers=1:nokey=1 "$f" 2>/dev/null)
+    if [[ -z "$actual" ]]; then
+        echo "[verify] $f: ffprobe couldn't read duration" >&2
+        return 1
+    fi
+    if (( $(printf '%.0f' "$actual") < expected_sec * 95 / 100 )); then
+        echo "[verify] $f: duration $actual s < expected ${expected_sec}s (likely corrupt)" >&2
+        return 1
+    fi
+    # Cheap deep scan: walk packets without decoding. Flags any container damage.
+    local errs
+    errs=$(ffmpeg -hide_banner -nostats -v error -i "$f" -map 0 \
+                  -c copy -f null - 2>&1 | head -3)
+    if [[ -n "$errs" ]]; then
+        echo "[verify] $f: container errors detected:" >&2
+        echo "$errs" | sed 's/^/  /' >&2
+        return 1
+    fi
+    return 0
+}
+
 i=1
 for url in "$@"; do
     out="day${i}.webm"
@@ -83,13 +114,13 @@ for url in "$@"; do
         # process doesn't lose the bytes we already have.
         attempt=1
         max_attempts=5
-        # Cap at 1080p by default — the OCR pipeline downscales to 720p
-        # anyway, and 4K streams are 4-10× larger which means 4-10× more
-        # exposure to the resume-corruption bug (interrupted partial writes
-        # of fragmented streams have produced byte-level corruption).
-        # Override with FORMAT=4k or FORMAT='bv*+ba/b' for the original.
-        : "${FORMAT:=bv*[height<=1080][ext=webm]+ba[ext=webm]/bv*[height<=1080]+ba/b[height<=1080]}"
-        until yt-dlp \
+        # Default to best available (4K when present). Override with FORMAT
+        # env var to cap (e.g. FORMAT='bv*[height<=1080]+ba/b[height<=1080]').
+        : "${FORMAT:=bv*[ext=webm]+ba[ext=webm]/bv*+ba/b}"
+        # Look up expected duration so we can verify integrity afterwards.
+        expected_sec=$(yt-dlp --print "%(duration)s" --no-warnings "$url" 2>/dev/null || echo 0)
+        while true; do
+            yt-dlp \
                 -f "$FORMAT" \
                 --merge-output-format webm \
                 --concurrent-fragments 8 \
@@ -99,25 +130,30 @@ for url in "$@"; do
                 --socket-timeout 30 \
                 --no-progress --newline \
                 -o "$out" \
-                "$url"; do
+                "$url"
             rc=$?
-            # If yt-dlp completed both downloads but its merger failed, the
-            # separate fNNN.webm streams are already on disk. Try to merge
-            # them ourselves before paying for another download attempt.
-            if manual_merge "$out"; then
+            # If the .webm wasn't produced but the separate streams are, try
+            # our own ffmpeg merge before re-downloading.
+            if [[ ! -f "$out" ]] && manual_merge "$out"; then
                 echo "[recovered] $out via manual merge after yt-dlp rc=$rc" >&2
-                break
             fi
+            if [[ -f "$out" ]] && \
+               { (( expected_sec == 0 )) || verify_integrity "$out" "$expected_sec"; }; then
+                break  # Success
+            fi
+            # Failure path: corrupt or missing output. Wipe everything and retry.
+            echo "[bad ] $out: discarding (yt-dlp rc=$rc)" >&2
+            rm -f "$out" "${out%.webm}".f*.webm "${out%.webm}".f*.webm.part \
+                  "${out%.webm}".temp.webm "${out%.webm}".webm.part
             if (( attempt >= max_attempts )); then
-                echo "[fail] $out: gave up after $max_attempts attempts (last rc=$rc)" >&2
+                echo "[fail] $out: gave up after $max_attempts attempts" >&2
                 exit 1
             fi
-            echo "[retry] $out: attempt $attempt failed (rc=$rc), retrying in 5s ..." >&2
-            sleep 5
             attempt=$((attempt + 1))
-            echo "[get ] $out  ←  $url  (attempt $attempt)"
+            echo "[retry] $out: attempt $attempt (clean restart in 5s) ..." >&2
+            sleep 5
         done
-        echo "[get ] $out  ←  $url"
+        echo "[get ] $out  ←  $url  (verified)"
     fi
     i=$((i + 1))
 done
