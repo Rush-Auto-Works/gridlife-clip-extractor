@@ -368,7 +368,8 @@ def scan(video: Path, series_list: list, gap: int, pad_pre: int, pad_post: int):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _snip_one(video: Path, r: dict, out_path: Path, reencode: bool):
+def _snip_one(video: Path, r: dict, out_path: Path, reencode: bool,
+              aac_audio: bool = False):
     dur = r["end"] - r["start"]
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning",
            "-ss", fmt_ts(r["start"]), "-i", str(video),
@@ -376,6 +377,9 @@ def _snip_one(video: Path, r: dict, out_path: Path, reencode: bool):
     if reencode:
         cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
                 "-c:a", "aac", "-b:a", "192k"]
+    elif aac_audio:
+        # AV1 video copy + AAC audio re-encode (universal MP4 audio compat).
+        cmd += ["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"]
     else:
         cmd += ["-c", "copy"]
     cmd += ["-y", str(out_path)]
@@ -385,7 +389,7 @@ def _snip_one(video: Path, r: dict, out_path: Path, reencode: bool):
 
 
 def snip(video: Path, series: str, out_dir: Path, reencode: bool, join: bool,
-         session_gap: int):
+         session_gap: int, container: str = "mkv", aac_audio: bool = False):
     sidecar = sidecar_for(video, series)
     if not sidecar.exists():
         sys.exit(f"no scan results at {sidecar}; run scan first")
@@ -417,14 +421,14 @@ def snip(video: Path, series: str, out_dir: Path, reencode: bool, join: bool,
         clip_paths = []
         for r_idx, r in enumerate(session, 1):
             name = (f"{base}_{series}_session{s_idx:02d}_part{r_idx:02d}"
-                    f"_{labels_tag}_{int(r['start'])}s.mkv")
+                    f"_{labels_tag}_{int(r['start'])}s.{container}")
             out_path = out_dir / name
-            _snip_one(video, r, out_path, reencode)
+            _snip_one(video, r, out_path, reencode, aac_audio)
             clip_paths.append(out_path)
 
         if join:
             joined_name = (f"{base}_{series}_session{s_idx:02d}_{labels_tag}"
-                           f"_{int(s_start)}s.mkv")
+                           f"_{int(s_start)}s.{container}")
             joined_path = out_dir / joined_name
             if len(clip_paths) == 1:
                 clip_paths[0].rename(joined_path)
@@ -473,6 +477,11 @@ def main():
                     help="emit individual range clips instead of one joined clip per session")
     sn.add_argument("--session-gap", type=int, default=DEFAULT_SESSION_GAP,
                     help="seconds of inactivity that mark a different session (default 1800 = 30min)")
+    sn.add_argument("--container", choices=["mp4", "mkv", "webm"], default="mp4",
+                    help="output container (default: mp4 — most compatible)")
+    sn.add_argument("--aac-audio", action="store_true",
+                    help="re-encode audio to AAC (helps Opus-in-MP4 compatibility for "
+                         "QuickTime / iOS / older players); video stays AV1 stream-copy")
     sn.set_defaults(join=True)
 
     args = ap.parse_args()
@@ -485,7 +494,8 @@ def main():
             out = args.out or Path(
                 f"{s}_clips" if len(series_list) == 1 else "clips"
             )
-            snip(args.video, s, out, args.reencode, args.join, args.session_gap)
+            snip(args.video, s, out, args.reencode, args.join, args.session_gap,
+                 args.container, args.aac_audio)
 
 
 if __name__ == "__main__":
