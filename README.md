@@ -92,10 +92,12 @@ Skips files that already exist.
 
 ### `find_w2w_races.py scan <video>`
 
-OCRs the upper-left header on every keyframe and matches against the
-detector regex(es) for the requested series. Writes a sidecar per series:
-`<video>.<series>.json`. Fast: ~30s per hour of 4K AV1 input on M-series
-for one series; multi-series is the same speed (single OCR pass).
+OCRs the full upper banner of every keyframe and matches it against the
+detector regex(es) for the requested series. Also tracks GRIDLIFE banner
+appearances so session starts can be back-extended to the prior commercial
+break. Writes a sidecar per series: `<video>.<series>.json`.
+Fast: ~30s per hour of 4K AV1 input on M-series for one series;
+multi-series is the same speed (single OCR pass).
 
 Tunables:
 
@@ -103,8 +105,8 @@ Tunables:
 |---------------|---------|-------------------------------------------------------------|
 | `--series`    | `rush`  | Comma-list of `rush,gltc,glgt`, or `all`                    |
 | `--gap`       | 120     | Merge hits within this many seconds into one range          |
-| `--pad-pre`   | 60      | Seconds prepended to each merged range                      |
-| `--pad-post`  | 180     | Seconds appended (covers cooldown lap + results screen)     |
+| `--pad-pre`   | 5       | Seconds prepended to each merged range (start mostly comes from banner trail) |
+| `--pad-post`  | 15      | Seconds appended (last hit ≈ end of results recap)          |
 
 ### `find_w2w_races.py snip <video>`
 
@@ -124,16 +126,31 @@ Tunables:
 
 1. **Keyframe-only decode.** `ffmpeg -skip_frame nokey` decodes only
    keyframes (typically every 3-5s). Avoids 99%+ of the decode work.
-2. **Crop + downscale before OCR.** 4K → 1280×720, then crop
-   the top-left 300×120 pixels containing the sidebar header.
-3. **Tesseract** with PSM 6, looking for `RUSH` (with OCR slip tolerance).
+2. **Downscale + full-width top crop.** 4K → 1280×720, then crop the
+   full upper banner (1280×250). The wider crop catches every overlay
+   variant the broadcast uses for one session: in-race header
+   (`<SERIES> | RACE N`), late-race "GAP TO LEADER" / "CHECKERED FLAG"
+   view, RESULTS recap (smaller subheader), top-right "RUSH SERIES"
+   sponsor badge, and WINNER panel.
+3. **Tesseract** with PSM 6, matching the per-series detector regex
+   on every cropped frame (with OCR slip tolerance).
 4. **Classify** the surrounding text — `WARMUP`, `QUALIFYING`,
    `RACE_N`, `PRACTICE`. Race numbers come from `RACE\s*[|]?\s*(\d+)`.
-5. **Merge** adjacent hits within `--gap` seconds → range.
-   Apply asymmetric padding (`--pad-pre` / `--pad-post`).
-   Stray ranges (overlapping after pad) get re-merged.
-6. **Group ranges into sessions** (`--session-gap`).
-7. **Snip + concat** each session via stream copy.
+5. **Track GRIDLIFE banner appearances** in the same OCR pass. The
+   event banner is on screen during all live coverage but vanishes
+   during commercials.
+6. **Merge** adjacent hits within `--gap` seconds → range.
+   Drop ranges with `<--min-hits` (default 3) — usually OCR slips on
+   sponsor logos. Apply tiny asymmetric padding
+   (`--pad-pre` / `--pad-post`). Stray ranges that overlap after pad
+   get re-merged.
+7. **Back-extend session start to the end of the prior commercial.**
+   For each range, walk the start backward through the GRIDLIFE
+   banner trail; stop at the first gap > 30s (= a real commercial
+   break) or after 10min lookback. Captures pre-leaderboard out-laps
+   for qualifying and grid-walk content for races.
+8. **Group ranges into sessions** (`--session-gap`).
+9. **Snip + concat** each session via stream copy.
 
 Tesseract is "good enough" for the high-contrast broadcast graphic; for
 lower-quality footage, swapping in Apple Vision (`pyobjc-framework-Vision`)
