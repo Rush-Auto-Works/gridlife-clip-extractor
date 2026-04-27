@@ -44,6 +44,31 @@ case "${1:-}" in
         ;;
 esac
 
+# Manually merge the separate video+audio streams that yt-dlp leaves behind
+# when its own postprocessor fails (which it sometimes does after a partial
+# download was resumed and finished). Returns 0 on success.
+manual_merge() {
+    local out="$1"
+    # yt-dlp names them day<N>.f<vfmt>.webm + day<N>.f<afmt>.webm
+    local vid afid
+    vid=$(ls -1 "${out%.webm}".f*.webm 2>/dev/null | head -1)
+    [[ -z "$vid" ]] && return 1
+    # Heuristic: video stream is the larger of the two fNNN files
+    local audio
+    audio=$(ls -1S "${out%.webm}".f*.webm 2>/dev/null | tail -1)
+    [[ "$vid" == "$audio" ]] && return 1
+    local video
+    video=$(ls -1S "${out%.webm}".f*.webm 2>/dev/null | head -1)
+    echo "[merge] $out  ←  $video + $audio (manual ffmpeg)"
+    if ffmpeg -hide_banner -loglevel warning \
+            -i "$video" -i "$audio" \
+            -map 0:v -map 1:a -c copy -y "$out"; then
+        rm -f "$video" "$audio" "${out%.webm}".temp.webm
+        return 0
+    fi
+    return 1
+}
+
 i=1
 for url in "$@"; do
     out="day${i}.webm"
@@ -67,6 +92,13 @@ for url in "$@"; do
                 -o "$out" \
                 "$url"; do
             rc=$?
+            # If yt-dlp completed both downloads but its merger failed, the
+            # separate fNNN.webm streams are already on disk. Try to merge
+            # them ourselves before paying for another download attempt.
+            if manual_merge "$out"; then
+                echo "[recovered] $out via manual merge after yt-dlp rc=$rc" >&2
+                break
+            fi
             if (( attempt >= max_attempts )); then
                 echo "[fail] $out: gave up after $max_attempts attempts (last rc=$rc)" >&2
                 exit 1
