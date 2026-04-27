@@ -32,8 +32,10 @@ pass and emit per-series sidecars.
    ```bash
    for v in day*.webm; do ../scripts/find_w2w_races.py snip "$v"; done
    ```
-   Output lands in `rush_clips/`, one MKV per session
+   Output lands in `rush_clips/`, one MP4 per session
    (warmup, qualifying, race 1..N), stream-copied — no re-encode.
+   For best AV1+Opus support pass `--container mkv`; for older players
+   that can't read Opus-in-MP4 add `--aac-audio` (re-encodes only audio).
 
 ## When something looks off
 
@@ -130,13 +132,13 @@ day1.webm.rush.json                                        (scan sidecar)
 day2.webm.rush.json
 day3.webm.rush.json
 rush_clips/
-    day1_rush_session01_QUALIFYING_NNNNs.mkv
-    day2_rush_session01_WARMUP_NNNNs.mkv
-    day2_rush_session02_RACE_1_NNNNs.mkv
-    day2_rush_session03_RACE_2_NNNNs.mkv
-    day3_rush_session01_WARMUP_NNNNs.mkv
-    day3_rush_session02_RACE_3_NNNNs.mkv
-    day3_rush_session03_RACE_4_NNNNs.mkv
+    day1_rush_session01_QUALIFYING_NNNNs.mp4
+    day2_rush_session01_WARMUP_NNNNs.mp4
+    day2_rush_session02_RACE_1_NNNNs.mp4
+    day2_rush_session03_RACE_2_NNNNs.mp4
+    day3_rush_session01_WARMUP_NNNNs.mp4
+    day3_rush_session02_RACE_3_NNNNs.mp4
+    day3_rush_session03_RACE_4_NNNNs.mp4
 ```
 
 With `--series all`, sidecars are `<video>.<series>.json` (rush, gltc,

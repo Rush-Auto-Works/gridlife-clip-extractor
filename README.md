@@ -61,24 +61,24 @@ for v in day*.webm; do ../scripts/find_w2w_races.py snip "$v"; done
 # For multiple series, snip writes to clips/ instead of <series>_clips/
 for v in day*.webm; do ../scripts/find_w2w_races.py snip "$v" --series all; done
 
-# Output: rush_clips/dayN_rush_sessionXX_<LABEL>_<startSec>s.mkv
-#         clips/dayN_<series>_sessionXX_<LABEL>_<startSec>s.mkv (multi-series)
+# Output: rush_clips/dayN_rush_sessionXX_<LABEL>_<startSec>s.mp4
+#         clips/dayN_<series>_sessionXX_<LABEL>_<startSec>s.mp4 (multi-series)
 ```
 
 Typical output for a three-day event with `--series all`:
 
 ```
-day1_rush_session01_QUALIFYING_2625s.mkv
-day2_rush_session01_WARMUP_4639s.mkv
-day2_rush_session02_RACE_1_19283s.mkv
-day2_rush_session03_RACE_2_31206s.mkv
-day2_gltc_session01_PRACTICE_5437s.mkv
-day2_gltc_session02_RACE_1_20844s.mkv
-day2_gltc_session03_RACE_2_32713s.mkv
-day2_glgt_session01_PRACTICE_5509s.mkv
-day2_glgt_session02_RACE_1_14091s.mkv
-day2_glgt_session03_RACE_2_34388s.mkv
-day3_rush_session01_WARMUP_5150s.mkv
+day1_rush_session01_QUALIFYING_2625s.mp4
+day2_rush_session01_WARMUP_4639s.mp4
+day2_rush_session02_RACE_1_19283s.mp4
+day2_rush_session03_RACE_2_31206s.mp4
+day2_gltc_session01_PRACTICE_5437s.mp4
+day2_gltc_session02_RACE_1_20844s.mp4
+day2_gltc_session03_RACE_2_32713s.mp4
+day2_glgt_session01_PRACTICE_5509s.mp4
+day2_glgt_session02_RACE_1_14091s.mp4
+day2_glgt_session03_RACE_2_34388s.mp4
+day3_rush_session01_WARMUP_5150s.mp4
 ...
 ```
 
@@ -115,17 +115,19 @@ Tunables:
 
 ### `find_w2w_races.py snip <video>`
 
-Reads the per-series sidecar(s) and writes one stream-copied MKV per session.
+Reads the per-series sidecar(s) and writes one stream-copied clip per session.
 
 Tunables:
 
-| Flag             | Default               | Notes                                                |
-|------------------|-----------------------|------------------------------------------------------|
-| `--series`       | `rush`                | Same syntax as `scan`                                |
-| `--out`          | `<series>_clips` or `clips` | Output directory; `clips/` when multi-series   |
-| `--session-gap`  | 1800 (30min)          | Ranges further apart go in separate sessions         |
-| `--no-join`      | (off)                 | Emit per-range files instead of joined session       |
-| `--reencode`     | (off)                 | Re-encode for frame-accurate cuts (slow)             |
+| Flag             | Default                     | Notes                                                       |
+|------------------|-----------------------------|-------------------------------------------------------------|
+| `--series`       | `rush`                      | Same syntax as `scan`                                       |
+| `--out`          | `<series>_clips` or `clips` | Output directory; `clips/` when multi-series                |
+| `--container`    | `mp4`                       | `mp4` (most compatible) / `mkv` (best AV1+Opus support) / `webm` |
+| `--session-gap`  | 1800 (30min)                | Ranges further apart go in separate sessions                |
+| `--no-join`      | (off)                       | Emit per-range files instead of joined session              |
+| `--aac-audio`    | (off)                       | Re-encode audio to AAC for QuickTime / iOS / older players (video stays AV1 stream-copy) |
+| `--reencode`     | (off)                       | Re-encode video too for frame-accurate cuts (slow)          |
 
 ## How the heuristic works
 
@@ -164,7 +166,7 @@ would cut OCR errors but the current detector is robust to most slips.
 ## Output naming convention
 
 ```
-<videoBasename>_session<NN>_<LABEL>_<startSec>s.mkv
+<videoBasename>_session<NN>_<LABEL>_<startSec>s.mp4
 ```
 
 `startSec` is seconds from the beginning of the source video. Useful for
