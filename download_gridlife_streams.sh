@@ -14,6 +14,9 @@
 # Run this from inside the event's folder, e.g.
 #   cd "2026-04 GridLife CMP" && ../scripts/download_gridlife_streams.sh URL1 URL2 URL3
 #
+# Defaults to 1080p (plenty for OCR; 4K is 4-10x larger). For 4K override:
+#   FORMAT='bv*[ext=webm]+ba[ext=webm]/bv*+ba/b' download_gridlife_streams.sh URL...
+#
 set -euo pipefail
 
 CHANNEL="https://www.youtube.com/@Gridlife/streams"
@@ -80,8 +83,14 @@ for url in "$@"; do
         # process doesn't lose the bytes we already have.
         attempt=1
         max_attempts=5
+        # Cap at 1080p by default — the OCR pipeline downscales to 720p
+        # anyway, and 4K streams are 4-10× larger which means 4-10× more
+        # exposure to the resume-corruption bug (interrupted partial writes
+        # of fragmented streams have produced byte-level corruption).
+        # Override with FORMAT=4k or FORMAT='bv*+ba/b' for the original.
+        : "${FORMAT:=bv*[height<=1080][ext=webm]+ba[ext=webm]/bv*[height<=1080]+ba/b[height<=1080]}"
         until yt-dlp \
-                -f 'bv*[ext=webm]+ba[ext=webm]/bv*+ba/b' \
+                -f "$FORMAT" \
                 --merge-output-format webm \
                 --concurrent-fragments 8 \
                 --retries 30 \
