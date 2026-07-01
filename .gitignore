@@ -7,7 +7,16 @@ venv/
 
 # Don't accidentally check in raw broadcast videos or scan sidecars
 *.webm
+*.part
 *.mkv
 *.mp4
+# Per-series scan sidecars (rush/gltc/glgt/trackbattle) and clip output dirs
 *.rush.json
+*.gltc.json
+*.glgt.json
+*.trackbattle.json
 rush_clips/
+gltc_clips/
+glgt_clips/
+trackbattle_clips/
+clips/

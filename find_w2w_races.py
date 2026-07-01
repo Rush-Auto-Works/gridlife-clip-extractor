@@ -5,7 +5,7 @@ Detect GridLife race-class segments in long broadcast webm captures.
 Heuristic: GridLife broadcast graphics show a teal sidebar in the upper-left
 labelled "<SERIES> WARMUP" / "<SERIES> QUALIFYING" / "<SERIES> | RACE N"
 while a session of that class is on screen. Supported series: rush (default),
-gltc, glgt. We OCR every keyframe, match the per-series detector regex,
+gltc, glgt, trackbattle. We OCR every keyframe, match the per-series detector regex,
 and merge contiguous hits into time ranges.
 
 Usage:
@@ -59,6 +59,11 @@ SERIES = {
     "rush": re.compile(r"\bR[UV][SS5][HMNI]?\b", re.IGNORECASE),
     "gltc": re.compile(r"\bGL[TY]C\b", re.IGNORECASE),
     "glgt": re.compile(r"\bGLGT\b", re.IGNORECASE),
+    # Matches qualifier sessions ("TRACKBATTLE Q1" etc.) AND the final
+    # "PODIUM SPRINT" session, which drops the TRACKBATTLE prefix entirely.
+    # No trailing \b — OCR frequently merges "TRACKBATTLE Q3" → "TRACKBATTLEQ3"
+    # or "TRACKBATTLEO3" (Q misread as O), so a word-boundary after E would miss them.
+    "trackbattle": re.compile(r"\bTRACKBATTLE|\bPODIUM\s*SPRINT\b", re.IGNORECASE),
 }
 
 # The "GRIDLIFE" event banner is on screen during *all* live broadcast
@@ -128,6 +133,17 @@ def classify(text: str) -> str:
         return "WARMUP"
     if "PRACT" in t:
         return "PRACTICE"
+    if "PODIUM" in t or "SPRINT" in t:
+        return "PODIUM_SPRINT"
+    m = re.search(r"\bQ(\d+)\b", t)
+    if m:
+        return f"Q{int(m.group(1))}"
+    # OCR frequently merges the qualifier into the series word and drops the
+    # space, misreading Q as O: "TRACKBATTLEQ3" / "TRACKBATTLEO3". Neither
+    # form has a word boundary before the Q, so the pattern above misses them.
+    m = re.search(r"TRACKBATTLE\s*[QO](\d+)", t)
+    if m:
+        return f"Q{int(m.group(1))}"
     return "UNKNOWN"
 
 
@@ -158,8 +174,14 @@ def keyframe_times(video: Path) -> list:
 
 
 def extract_keyframes(video: Path, out_dir: Path):
-    """Decode only keyframes, cropped to header. ~100× faster than full decode."""
-    vf = f"scale={SCALE_W}:{SCALE_H},crop={CROP_W}:{CROP_H}:0:0"
+    """Decode only keyframes, cropped to header. ~100x faster than full decode.
+
+    -skip_frame nokey hints the decoder to skip non-keyframes (works well for
+    AV1/dav1d). The select filter is a belt-and-suspenders guard for codecs
+    (e.g. VP9) where -skip_frame nokey is ignored by the decoder — without it
+    every frame would be output and the frame→timestamp pairing would break.
+    """
+    vf = f"select='eq(pict_type\\,I)',scale={SCALE_W}:{SCALE_H},crop={CROP_W}:{CROP_H}:0:0"
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-skip_frame", "nokey",
@@ -458,7 +480,7 @@ def main():
     sp = sub.add_parser("scan")
     sp.add_argument("video", type=Path)
     sp.add_argument("--series", default="rush",
-                    help="comma-list of rush/gltc/glgt, or 'all' (default: rush)")
+                    help="comma-list of rush/gltc/glgt/trackbattle, or 'all' (default: rush)")
     sp.add_argument("--gap", type=int, default=DEFAULT_GAP)
     sp.add_argument("--pad-pre", type=int, default=DEFAULT_PAD_PRE,
                     help="seconds prepended to each merged range")
@@ -468,7 +490,7 @@ def main():
     sn = sub.add_parser("snip")
     sn.add_argument("video", type=Path)
     sn.add_argument("--series", default="rush",
-                    help="comma-list of rush/gltc/glgt, or 'all' (default: rush)")
+                    help="comma-list of rush/gltc/glgt/trackbattle, or 'all' (default: rush)")
     sn.add_argument("--out", type=Path, default=None,
                     help="output directory (default: <series>_clips, or 'clips' for multi)")
     sn.add_argument("--reencode", action="store_true",
