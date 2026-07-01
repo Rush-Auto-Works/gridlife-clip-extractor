@@ -138,6 +138,12 @@ def classify(text: str) -> str:
     m = re.search(r"\bQ(\d+)\b", t)
     if m:
         return f"Q{int(m.group(1))}"
+    # OCR frequently merges the qualifier into the series word and drops the
+    # space, misreading Q as O: "TRACKBATTLEQ3" / "TRACKBATTLEO3". Neither
+    # form has a word boundary before the Q, so the pattern above misses them.
+    m = re.search(r"TRACKBATTLE\s*[QO](\d+)", t)
+    if m:
+        return f"Q{int(m.group(1))}"
     return "UNKNOWN"
 
 
@@ -168,7 +174,7 @@ def keyframe_times(video: Path) -> list:
 
 
 def extract_keyframes(video: Path, out_dir: Path):
-    """Decode only keyframes, cropped to header. ~100× faster than full decode.
+    """Decode only keyframes, cropped to header. ~100x faster than full decode.
 
     -skip_frame nokey hints the decoder to skip non-keyframes (works well for
     AV1/dav1d). The select filter is a belt-and-suspenders guard for codecs

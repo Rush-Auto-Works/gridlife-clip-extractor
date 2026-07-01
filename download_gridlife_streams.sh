@@ -35,11 +35,15 @@ fi
 START=1
 case "${1:-}" in
     "")
-        sed -n '2,17p' "$0" | sed 's/^# *//'
+        sed -n '2,18p' "$0" | sed 's/^# *//'
         exit 0
         ;;
     --start)
         START="${2:?'--start requires a number'}"
+        if [[ ! "$START" =~ ^[0-9]+$ ]]; then
+            echo "--start requires a positive integer, got: $START" >&2
+            exit 1
+        fi
         shift 2
         ;;
     --list)
