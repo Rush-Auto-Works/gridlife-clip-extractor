@@ -11,8 +11,11 @@
 #   download_gridlife_streams.sh --auto N         # download the N most recent streams
 #
 # Files land in $PWD as dayN.webm (named in the order given on the command line).
+# Use --start N to begin numbering at a day other than 1 (e.g. when re-downloading
+# a later day after day1 already exists).
 # Run this from inside the event's folder, e.g.
 #   cd "2026-04 GridLife CMP" && ../scripts/download_gridlife_streams.sh URL1 URL2 URL3
+#   cd "2026-04 GridLife CMP" && ../scripts/download_gridlife_streams.sh --start 2 URL2
 #
 # Defaults to the best available format (typically 4K AV1/VP9 + Opus). After
 # each download we verify the file integrity with ffprobe — if the duration
@@ -29,10 +32,15 @@ if ! command -v yt-dlp >/dev/null 2>&1; then
     exit 1
 fi
 
+START=1
 case "${1:-}" in
     "")
-        sed -n '2,16p' "$0" | sed 's/^# *//'
+        sed -n '2,17p' "$0" | sed 's/^# *//'
         exit 0
+        ;;
+    --start)
+        START="${2:?'--start requires a number'}"
+        shift 2
         ;;
     --list)
         # List the channel's recent streams (id + title) without downloading
@@ -103,7 +111,7 @@ verify_integrity() {
     return 0
 }
 
-i=1
+i=$START
 for url in "$@"; do
     out="day${i}.webm"
     if [[ -f "$out" ]]; then
