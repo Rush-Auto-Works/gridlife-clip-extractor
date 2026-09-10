@@ -1,4 +1,5 @@
 # GridLife clip extractor
+[![CI](https://github.com/Rush-Auto-Works/gridlife-clip-extractor/actions/workflows/ci.yml/badge.svg)](https://github.com/Rush-Auto-Works/gridlife-clip-extractor/actions/workflows/ci.yml)
 
 Pulls per-class race sessions out of multi-hour GridLife broadcast streams.
 Built for **Rush SR** (default) but also handles **GLTC** and **GLGT** —
@@ -38,6 +39,18 @@ python3 -m venv /private/tmp/claude/venv   # any venv works; this one matches
 for these streams — the dav1d software decode is plenty fast on Apple Silicon
 when combined with the `-skip_frame nokey` trick the script uses.)
 
+## Tests & CI
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Unit tests run anywhere. Integration tests encode tiny synthetic clips
+and exercise scan/snip end-to-end; they need `ffmpeg` and `tesseract` on
+PATH and skip automatically when either is missing, so Windows CI runs
+the unit suite only. GitHub Actions runs everything on ubuntu, macOS and
+windows via `.github/workflows/ci.yml`.
+
 ## Per-event workflow
 
 ```bash
@@ -61,24 +74,24 @@ for v in day*.webm; do ../scripts/find_w2w_races.py snip "$v"; done
 # For multiple series, snip writes to clips/ instead of <series>_clips/
 for v in day*.webm; do ../scripts/find_w2w_races.py snip "$v" --series all; done
 
-# Output: rush_clips/dayN_rush_sessionXX_<LABEL>_<startSec>s.mp4
-#         clips/dayN_<series>_sessionXX_<LABEL>_<startSec>s.mp4 (multi-series)
+# Output: rush_clips/dayN_rush_sessionXX_<LABEL>_<startSec>s.webm
+#         clips/dayN_<series>_sessionXX_<LABEL>_<startSec>s.webm (multi-series)
 ```
 
 Typical output for a three-day event with `--series all`:
 
 ```
-day1_rush_session01_QUALIFYING_2625s.mp4
-day2_rush_session01_WARMUP_4639s.mp4
-day2_rush_session02_RACE_1_19283s.mp4
-day2_rush_session03_RACE_2_31206s.mp4
-day2_gltc_session01_PRACTICE_5437s.mp4
-day2_gltc_session02_RACE_1_20844s.mp4
-day2_gltc_session03_RACE_2_32713s.mp4
-day2_glgt_session01_PRACTICE_5509s.mp4
-day2_glgt_session02_RACE_1_14091s.mp4
-day2_glgt_session03_RACE_2_34388s.mp4
-day3_rush_session01_WARMUP_5150s.mp4
+day1_rush_session01_QUALIFYING_2625s.webm
+day2_rush_session01_WARMUP_4639s.webm
+day2_rush_session02_RACE_1_19283s.webm
+day2_rush_session03_RACE_2_31206s.webm
+day2_gltc_session01_PRACTICE_5437s.webm
+day2_gltc_session02_RACE_1_20844s.webm
+day2_gltc_session03_RACE_2_32713s.webm
+day2_glgt_session01_PRACTICE_5509s.webm
+day2_glgt_session02_RACE_1_14091s.webm
+day2_glgt_session03_RACE_2_34388s.webm
+day3_rush_session01_WARMUP_5150s.webm
 ...
 ```
 
@@ -123,11 +136,11 @@ Tunables:
 |------------------|-----------------------------|-------------------------------------------------------------|
 | `--series`       | `rush`                      | Same syntax as `scan`                                       |
 | `--out`          | `<series>_clips` or `clips` | Output directory; `clips/` when multi-series                |
-| `--container`    | `mp4`                       | `mp4` (most compatible) / `mkv` (best AV1+Opus support) / `webm` |
+| `--container`    | `webm`                      | `webm` (VP9/AV1 + Opus lossless copy) / `mkv` / `mp4` |
 | `--session-gap`  | 1800 (30min)                | Ranges further apart go in separate sessions                |
 | `--no-join`      | (off)                       | Emit per-range files instead of joined session              |
-| `--aac-audio`    | (off)                       | Re-encode audio to AAC for QuickTime / iOS / older players (video stays AV1 stream-copy) |
-| `--reencode`     | (off)                       | Re-encode video too for frame-accurate cuts (slow)          |
+| `--aac-audio`    | (off)                       | Re-encode audio to AAC for QuickTime / iOS / older players; needs `--container mkv` or `mp4` |
+| `--reencode`     | (off)                       | Re-encode H.264 video for frame-accurate cuts (slow); needs `--container mkv` or `mp4` |
 
 ## How the heuristic works
 
@@ -166,7 +179,7 @@ would cut OCR errors but the current detector is robust to most slips.
 ## Output naming convention
 
 ```
-<videoBasename>_session<NN>_<LABEL>_<startSec>s.mp4
+<videoBasename>_session<NN>_<LABEL>_<startSec>s.webm
 ```
 
 `startSec` is seconds from the beginning of the source video. Useful for

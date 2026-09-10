@@ -33,6 +33,25 @@ from collections import Counter
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+def _resolve_tool(name: str, extra: list) -> str:
+    """Locate an external tool: PATH first, then known install locations
+    (the Windows Tesseract/ffmpeg installers don't add themselves to PATH)."""
+    p = shutil.which(name)
+    if p:
+        return p
+    for c in extra:
+        if os.path.isfile(c):
+            return c
+    return name
+
+
+FFMPEG = _resolve_tool("ffmpeg", [r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"])
+FFPROBE = _resolve_tool("ffprobe", [r"C:\Program Files\ffmpeg\bin\ffprobe.exe"])
+TESSERACT = _resolve_tool("tesseract", [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+])
+
 # --- Tunables ---
 # Crop covers the full upper banner so we catch every overlay variant the
 # broadcast uses for one session: the in-race header (<SERIES> | RACE N),
@@ -133,7 +152,7 @@ def classify(text: str) -> str:
 
 def video_duration(path: Path) -> float:
     out = subprocess.check_output([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        FFPROBE, "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", str(path)
     ], text=True).strip()
     return float(out)
@@ -142,7 +161,7 @@ def video_duration(path: Path) -> float:
 def keyframe_times(video: Path) -> list:
     """Return list of keyframe timestamps (seconds) for the primary video stream."""
     out = subprocess.check_output([
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        FFPROBE, "-v", "error", "-select_streams", "v:0",
         "-show_entries", "packet=pts_time,flags",
         "-of", "csv=print_section=0", str(video)
     ], text=True)
@@ -157,11 +176,22 @@ def keyframe_times(video: Path) -> list:
     return times
 
 
+SHOWINFO_PTS_RE = re.compile(r"pts_time:(-?[0-9]+(?:\.[0-9]+)?)")
+
+
+def _showinfo_pts_times(stderr: str) -> list:
+    """Per-frame pts_time values from ffmpeg showinfo output, in output order."""
+    return [float(m) for m in SHOWINFO_PTS_RE.findall(stderr)]
+
+
 def extract_keyframes(video: Path, out_dir: Path):
-    """Decode only keyframes, cropped to header. ~100× faster than full decode."""
-    vf = f"scale={SCALE_W}:{SCALE_H},crop={CROP_W}:{CROP_H}:0:0"
+    """Decode keyframes, cropped to header. ~100× faster than full decode
+    when -skip_frame nokey is honored. showinfo records each decoded
+    frame's pts so frames pair with exact timestamps even when a decoder
+    build ignores -skip_frame nokey."""
+    vf = f"showinfo,scale={SCALE_W}:{SCALE_H},crop={CROP_W}:{CROP_H}:0:0"
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        FFMPEG, "-hide_banner", "-loglevel", "info",
         "-skip_frame", "nokey",
         "-i", str(video),
         "-fps_mode", "vfr",
@@ -169,13 +199,15 @@ def extract_keyframes(video: Path, out_dir: Path):
         "-y",
         str(out_dir / "k_%07d.png"),
     ]
-    return subprocess.Popen(cmd)
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                            encoding="utf-8", errors="replace")
 
 
 def ocr_frame(path: Path) -> str:
     try:
         r = subprocess.run(
-            ["tesseract", str(path), "-", "--psm", TESSERACT_PSM],
+            [TESSERACT, str(path), "-", "--psm", TESSERACT_PSM],
             capture_output=True, check=False
         )
         if r.returncode != 0 and os.environ.get("RUSH_DEBUG"):
@@ -287,6 +319,21 @@ def _ocr_one(args):
     return idx, t, text
 
 
+def _scratch_dir() -> Path:
+    """Scratch dir for decoded keyframes. Prefer /private/tmp/claude when it
+    exists and is writable: sandboxed macOS runs can't see the default /tmp
+    location from subprocesses. Everywhere else (Windows, plain hosts) fall
+    back to the OS temp dir."""
+    sandbox_root = Path("/private/tmp/claude")
+    try:
+        if sandbox_root.is_dir() and os.access(sandbox_root, os.W_OK):
+            return Path(tempfile.mkdtemp(prefix="rush_scan_",
+                                         dir=str(sandbox_root)))
+    except OSError:
+        pass
+    return Path(tempfile.mkdtemp(prefix="rush_scan_"))
+
+
 def scan(video: Path, series_list: list, gap: int, pad_pre: int, pad_post: int):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -300,9 +347,7 @@ def scan(video: Path, series_list: list, gap: int, pad_pre: int, pad_post: int):
               for s in series_list}
     gridlife_times = []  # shared, copied to each state at end
 
-    tmp_root = Path("/private/tmp/claude")
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    tmpdir = Path(tempfile.mkdtemp(prefix="rush_scan_", dir=str(tmp_root)))
+    tmpdir = _scratch_dir()
     try:
         t0 = time.time()
         print(f"[scan] probing keyframe timestamps ...", file=sys.stderr)
@@ -313,18 +358,38 @@ def scan(video: Path, series_list: list, gap: int, pad_pre: int, pad_post: int):
 
         print(f"[scan] decoding keyframes → {tmpdir} ...", file=sys.stderr)
         proc = extract_keyframes(video, tmpdir)
-        proc.wait()
+        _, ff_err = proc.communicate()
         if proc.returncode != 0:
-            sys.exit(f"ffmpeg failed (rc={proc.returncode})")
+            sys.exit(f"ffmpeg failed (rc={proc.returncode}) "
+                     f"stderr_tail={(ff_err or '')[-500:]!r}")
         frames = sorted(tmpdir.glob("k_*.png"))
-        if len(frames) != len(kf_times):
-            print(f"[scan] WARN frames={len(frames)} != kf_times={len(kf_times)}; "
-                  f"using min length", file=sys.stderr)
-        n = min(len(frames), len(kf_times))
+        # Pair each decoded PNG with its own pts from showinfo. A decoder
+        # build that ignores -skip_frame nokey emits every frame; the old
+        # keyframe-index pairing would then attach wrong timestamps.
+        frame_pts = _showinfo_pts_times(ff_err or "")
+        if len(frame_pts) == len(frames) and frames:
+            if len(frames) > len(kf_times):
+                print(f"[scan] WARN decoder ignored -skip_frame nokey: "
+                      f"{len(frames)} frames decoded vs {len(kf_times)} "
+                      f"keyframes; continuing with exact pts timestamps "
+                      f"(slower pass)", file=sys.stderr)
+            elif len(frames) < len(kf_times):
+                print(f"[scan] note: {len(frames)} frames decoded vs "
+                      f"{len(kf_times)} keyframes (some dropped); pairing "
+                      f"via exact pts", file=sys.stderr)
+            times_for = frame_pts
+        else:
+            if len(frames) != len(kf_times):
+                print(f"[scan] WARN frames={len(frames)} != "
+                      f"kf_times={len(kf_times)}; showinfo pairing "
+                      f"unavailable, using min length (timestamps may "
+                      f"drift)", file=sys.stderr)
+            times_for = kf_times
+        n = min(len(frames), len(times_for))
         print(f"[scan] decoded {n} frames in {time.time()-t0:.0f}s; "
               f"OCRing with {OCR_WORKERS} workers ...", file=sys.stderr)
 
-        tasks = [(i + 1, kf_times[i], frames[i]) for i in range(n)]
+        tasks = [(i + 1, times_for[i], frames[i]) for i in range(n)]
         with ThreadPoolExecutor(max_workers=OCR_WORKERS) as ex:
             for done, (idx, t, text) in enumerate(ex.map(_ocr_one, tasks), 1):
                 # Track when the GRIDLIFE event banner is on screen — used to
@@ -371,7 +436,7 @@ def scan(video: Path, series_list: list, gap: int, pad_pre: int, pad_post: int):
 def _snip_one(video: Path, r: dict, out_path: Path, reencode: bool,
               aac_audio: bool = False):
     dur = r["end"] - r["start"]
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning",
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "warning",
            "-ss", fmt_ts(r["start"]), "-i", str(video),
            "-t", f"{dur:.3f}"]
     if reencode:
@@ -437,12 +502,12 @@ def snip(video: Path, series: str, out_dir: Path, reencode: bool, join: bool,
             else:
                 list_path = out_dir / f".{base}_{series}_session{s_idx:02d}_concat.txt"
                 list_path.write_text(
-                    "".join(f"file '{p.resolve()}'\n" for p in clip_paths)
+                    "".join(f"file '{p.resolve().as_posix()}'\n" for p in clip_paths)
                 )
                 print(f"[join] concatenating {len(clip_paths)} clips → "
                       f"{joined_path.name}", file=sys.stderr)
                 subprocess.check_call([
-                    "ffmpeg", "-hide_banner", "-loglevel", "warning",
+                    FFMPEG, "-hide_banner", "-loglevel", "warning",
                     "-f", "concat", "-safe", "0", "-i", str(list_path),
                     "-c", "copy", "-y", str(joined_path),
                 ])
@@ -477,14 +542,22 @@ def main():
                     help="emit individual range clips instead of one joined clip per session")
     sn.add_argument("--session-gap", type=int, default=DEFAULT_SESSION_GAP,
                     help="seconds of inactivity that mark a different session (default 1800 = 30min)")
-    sn.add_argument("--container", choices=["mp4", "mkv", "webm"], default="mp4",
-                    help="output container (default: mp4 — most compatible)")
+    sn.add_argument("--container", choices=["mp4", "mkv", "webm"], default="webm",
+                    help="output container (default: webm — VP9/AV1 + Opus "
+                         "stream-copy cleanly; mp4/mkv selectable)")
     sn.add_argument("--aac-audio", action="store_true",
-                    help="re-encode audio to AAC (helps Opus-in-MP4 compatibility for "
-                         "QuickTime / iOS / older players); video stays AV1 stream-copy")
+                    help="re-encode audio to AAC (helps Opus-in-MP4 compatibility "
+                         "for QuickTime / iOS / older players); needs --container "
+                         "mkv or mp4 (the webm muxer has no AAC)")
     sn.set_defaults(join=True)
 
     args = ap.parse_args()
+    if args.cmd == "snip" and args.aac_audio and args.container == "webm":
+        sys.exit("--aac-audio can't be muxed into webm (the webm muxer has no "
+                 "AAC support); use --container mkv or mp4")
+    if args.cmd == "snip" and args.reencode and args.container == "webm":
+        sys.exit("--reencode writes H.264+AAC, which the webm muxer does not "
+                 "accept; use --container mkv or mp4")
     if args.cmd == "scan":
         series_list = parse_series(args.series)
         scan(args.video, series_list, args.gap, args.pad_pre, args.pad_post)

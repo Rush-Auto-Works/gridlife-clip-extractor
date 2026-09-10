@@ -32,10 +32,11 @@ pass and emit per-series sidecars.
    ```bash
    for v in day*.webm; do ../scripts/find_w2w_races.py snip "$v"; done
    ```
-   Output lands in `rush_clips/`, one MP4 per session
+   Output lands in `rush_clips/`, one clip per session
    (warmup, qualifying, race 1..N), stream-copied — no re-encode.
-   For best AV1+Opus support pass `--container mkv`; for older players
-   that can't read Opus-in-MP4 add `--aac-audio` (re-encodes only audio).
+   Default container is `webm` (VP9/AV1 + Opus copy cleanly);
+   `--container mkv` or `mp4` are selectable. `--aac-audio` re-encodes
+   only audio but requires `mp4` or `mkv` (the webm muxer has no AAC).
 
 ## When something looks off
 
@@ -49,6 +50,7 @@ pass and emit per-series sidecars.
 | Filename says `UNKNOWN`              | Add the new keyword to `classify()`            |
 | Filename has wrong race number       | OCR slip — confirmed by inspecting JSON        |
 | Stray short range with sponsor-logo hit | Raise `--min-hits` (default 3)              |
+| Scan warns `decoder ignored -skip_frame nokey` | That VP9 decoder build decodes every frame — slow, but timestamps stay exact (showinfo pairing) |
 
 After tweaking `classify()` only (no scan params), you don't need to
 re-scan — see README "Re-running with new defaults" for the in-place
@@ -82,8 +84,9 @@ miss the warm-up. Watch for that.
 
 📌 `tempfile.mkdtemp()` under the Claude Code sandbox returns
 `/tmp/claude-501/...` which is **not visible to subprocesses** (tesseract,
-ffmpeg). The script pins its tempdir to `/private/tmp/claude/` for that
-reason. Don't change it back.
+ffmpeg). The script prefers `/private/tmp/claude/` when it exists and
+falls back to the OS temp dir everywhere else (Windows). Don't remove
+that preference.
 
 📌 `mkdir` and writes outside the current event folder are blocked by
 the default sandbox. To write to `scripts/` from inside an event folder,
@@ -132,13 +135,13 @@ day1.webm.rush.json                                        (scan sidecar)
 day2.webm.rush.json
 day3.webm.rush.json
 rush_clips/
-    day1_rush_session01_QUALIFYING_NNNNs.mp4
-    day2_rush_session01_WARMUP_NNNNs.mp4
-    day2_rush_session02_RACE_1_NNNNs.mp4
-    day2_rush_session03_RACE_2_NNNNs.mp4
-    day3_rush_session01_WARMUP_NNNNs.mp4
-    day3_rush_session02_RACE_3_NNNNs.mp4
-    day3_rush_session03_RACE_4_NNNNs.mp4
+    day1_rush_session01_QUALIFYING_NNNNs.webm
+    day2_rush_session01_WARMUP_NNNNs.webm
+    day2_rush_session02_RACE_1_NNNNs.webm
+    day2_rush_session03_RACE_2_NNNNs.webm
+    day3_rush_session01_WARMUP_NNNNs.webm
+    day3_rush_session02_RACE_3_NNNNs.webm
+    day3_rush_session03_RACE_4_NNNNs.webm
 ```
 
 With `--series all`, sidecars are `<video>.<series>.json` (rush, gltc,
