@@ -117,11 +117,13 @@ DEFAULT_SESSION_GAP = 1800         # 30min — separates true sessions
 DEFAULT_MIN_HITS = 3               # drop sub-threshold ranges (sponsor-logo OCR slips)
 DEFAULT_COMMERCIAL_GAP = 30        # GRIDLIFE banner gap > this → commercial break
 DEFAULT_MAX_LOOKBACK = 600         # cap session-start back-extension at 10min
-OCR_WORKERS = 24                   # parallel tesseract threads
+OCR_WORKERS = min(int(os.environ.get("OCR_WORKERS", "24")),
+                  os.cpu_count() or 4)  # parallel tesseract processes
 ```
 
-The 24-worker default suits an M5 Max. On smaller chips, drop it to the
-P-core count.
+Workers are capped to the CPU count (small CI runners choke on 24
+concurrent tesseracts) and each tesseract is pinned single-threaded via
+`OMP_THREAD_LIMIT=1`. Override the cap with the `OCR_WORKERS` env var.
 
 ## File outputs you should expect
 

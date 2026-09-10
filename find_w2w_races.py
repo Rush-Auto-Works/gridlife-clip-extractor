@@ -68,7 +68,10 @@ DEFAULT_MIN_HITS = 3               # drop ranges with fewer hits — usually OCR
 DEFAULT_COMMERCIAL_GAP = 30        # absence of GRIDLIFE banner this long → that's a commercial break
 DEFAULT_MAX_LOOKBACK = 600         # cap session-start back-extension at 10min
 TESSERACT_PSM = "6"
-OCR_WORKERS = 24                   # parallel tesseract processes
+# Parallel tesseract processes: capped by CPU count so small hosts/CI
+# runners don't spawn 24 workers; override with the OCR_WORKERS env var.
+OCR_WORKERS = min(int(os.environ.get("OCR_WORKERS", "24")),
+                  os.cpu_count() or 4)
 
 # Series detectors. Each maps a CLI name → compiled regex matching the
 # leading series word in the broadcast overlay. All series share the same
@@ -208,7 +211,8 @@ def ocr_frame(path: Path) -> str:
     try:
         r = subprocess.run(
             [TESSERACT, str(path), "-", "--psm", TESSERACT_PSM],
-            capture_output=True, check=False
+            capture_output=True, check=False,
+            env={**os.environ, "OMP_THREAD_LIMIT": "1"},
         )
         if r.returncode != 0 and os.environ.get("RUSH_DEBUG"):
             print(f"  [tesseract rc={r.returncode}] {r.stderr[:200]!r}",
